@@ -1,16 +1,5 @@
 """
-Buckshot Roulette round tracker — single-file, always-on-top desktop app.
-
-Everything (UI, styles, logic) lives in this one file, shown in an embedded
-webview.
-
-Sizing: on startup the app measures the exact pixel size that stage two needs
-(its tallest layout, with the Shoot button showing, and a column of 4 shells
-plus 8 in the chamber on single rows), then resizes the window in a short
-feedback loop until the real viewport matches that size exactly. This makes
-the fit correct on any display scaling. The window is then frame-locked so it
-cannot be resized. Stage one is shorter, so it leaves a gap at the bottom —
-by design.
+Buckshot Roulette round tracker
 
 Requirements:
     pip install pywebview
@@ -63,6 +52,9 @@ HTML = r"""<!DOCTYPE html>
   .btn:disabled{opacity:.35;color:var(--muted);cursor:default;transform:none;}
   .btn:disabled:hover{border-color:var(--line);}
   .reset{color:var(--muted);}
+  .hdr-btns{display:flex;gap:8px;align-items:baseline;}
+  .close{color:var(--muted);}
+  .close:hover{border-color:var(--live);color:var(--live-bright);}
 
   .cols{display:flex;gap:14px;}
   .col{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:12px;
@@ -79,6 +71,7 @@ HTML = r"""<!DOCTYPE html>
   .num:hover{border-color:#6d6358;background:#3F3933;}
   .num.sel{background:#3a1714;border-color:var(--live);color:var(--live-bright);}
   .col-blank .num.sel{background:#2F2A25;border-color:var(--blank);color:#fff;}
+  .num.wide{grid-column:1 / -1;justify-self:center;width:calc(50% - 4px);}  /* the lone 5, centred */
   .hidden{display:none !important;}
   .invisible{visibility:hidden !important;}
   .hint{font-size:11px;color:var(--muted);text-align:center;margin-top:2px;min-height:14px;}
@@ -122,7 +115,10 @@ HTML = r"""<!DOCTYPE html>
 <div class="app">
   <header>
     <h1>Buckshot Tracker</h1>
-    <button class="btn reset" id="reset">Reset</button>
+    <div class="hdr-btns">
+      <button class="btn reset" id="reset">Reset</button>
+      <button class="btn close" id="close">Close</button>
+    </div>
   </header>
 
   <!-- STAGE 1 -->
@@ -210,9 +206,10 @@ const $ = id => document.getElementById(id);
 function buildGrids(){
   const mk = (grid,type)=>{
     grid.innerHTML='';
-    for(let n=1;n<=4;n++){
+    for(let n=1;n<=5;n++){
       const b=document.createElement('button');
-      b.className='num'; b.textContent=n;
+      b.className='num'+(n===5?' wide':'');   // 5 sits centred on its own row
+      b.textContent=n;
       b.onclick=()=>pick(type,n,b);
       grid.appendChild(b);
     }
@@ -344,7 +341,8 @@ function renderChamber(){
   }
   state.chamber.forEach((slot,i)=>{
     const d=document.createElement('div');
-    d.className='slot'+(i===0?' first':'');
+    // offset the current shell only when there are others after it; a lone shell stays centred
+    d.className='slot'+((i===0 && state.chamber.length>1)?' first':'');
     if(slot.type===null) d.dataset.empty=i;
     d.innerHTML = svg(slot.type===null?'gray':slot.type) + `<span class="lbl">${i+1}</span>`;
     c.appendChild(d);
@@ -390,8 +388,8 @@ function endDrag(e){
 function reveal(){ document.body.style.visibility='visible'; }
 
 function buildMaxLayout(){                 // tallest + widest stage two
-  state = fresh(); state.liveCount=4; state.blankCount=4;
-  state.chamber = Array.from({length:8},()=>({type:null}));
+  state = fresh(); state.liveCount=5; state.blankCount=5;
+  state.chamber = Array.from({length:10},()=>({type:null}));
   state.chamber[0].type='live'; state.live.gray=1;   // front known -> Shoot shows
   $('stage1').classList.add('hidden');
   $('stage2').classList.remove('hidden');
@@ -414,7 +412,11 @@ function measureNeed(){                     // exact CSS px the window must cont
   const chamW = $('chamber').scrollWidth + cwPad;
   const bs = cs(document.body);
   const bodyPad = px(bs.paddingLeft)+px(bs.paddingRight);
-  const w = Math.ceil(Math.max(colsW, chamW) + bodyPad) + 2;        // +2 safety so it never wraps
+  // the header (title + buttons) can be the widest row, so include it
+  const hdr = document.querySelector('header');
+  const hdrInner = hdr.querySelector('h1').scrollWidth
+                 + hdr.querySelector('.hdr-btns').scrollWidth + 16;
+  const w = Math.ceil(Math.max(colsW, chamW, hdrInner) + bodyPad) + 2;  // +2 safety so it never wraps
   // height = true content bottom (root overflow:hidden clamps scrollHeight, so
   // measure from the bottom-most element instead) + body's bottom padding
   const bottom = $('odds').getBoundingClientRect().bottom;
@@ -454,6 +456,7 @@ setTimeout(reveal, 2500);   // safety: never stay hidden
 
 /* ---------- wire up ---------- */
 $('reset').onclick=reset;
+$('close').onclick=()=>{ const api=window.pywebview&&window.pywebview.api; if(api&&api.close) api.close(); };
 document.querySelectorAll('.usedbtn').forEach(b=>{
   b.onclick=()=>ejectUnknown(b.dataset.type);
 });
@@ -538,6 +541,12 @@ class Api:
     def lock(self):
         lock_unresizable()
 
+    def close(self):
+        try:
+            webview.windows[0].destroy()
+        except Exception:
+            pass
+
 
 def register_start_menu_shortcut():
     """Make the app searchable in Start: create a Start Menu shortcut on first
@@ -553,7 +562,9 @@ def register_start_menu_shortcut():
         target = sys.executable
         programs = os.path.join(os.environ["APPDATA"],
                                 r"Microsoft\Windows\Start Menu\Programs")
-        lnk = os.path.join(programs, "Buckshot Tracker.lnk")
+        folder = os.path.join(programs, "Utilities & Tools")   # Start "All apps" group
+        os.makedirs(folder, exist_ok=True)
+        lnk = os.path.join(folder, "Buckshot Tracker.lnk")
         if os.path.exists(lnk):
             return
         ps = (
